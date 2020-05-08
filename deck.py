@@ -3,11 +3,11 @@ import pygame
 import pygame.freetype
 from pygame.constants import RESIZABLE, KEYDOWN, QUIT
 from collections import namedtuple
-from functools import partial, singledispatch
-from itertools import chain, cycle
+from functools import partial, singledispatch, reduce
+from itertools import chain, cycle, starmap
 from time import sleep
-
-pygame.init()
+from operator import sub
+from contextlib import suppress
 
 card_ratio = 8 / 5
 card_size = (75, 120)
@@ -89,16 +89,27 @@ class CardSurface(FrenchCard):
             return self._surface
         except AttributeError:
             self._surface = pygame.Surface(self.size)
-            self.render_surface()
+            self._surface.fill(Colors.white)
+            if 'font' not in dir(self) or self.font is None:
+                global font
+                if font is None:
+                    font = pygame.freetype.SysFont(','.join(font_selection), 80)
+                self.font = font
+            with suppress(ValueError, ZeroDivisionError, StopIteration):
+                self.render_surface()
             return self._surface
 
     def render(self):
+        """NB: rendered surface is cached ; call clear to trully render again"""
         return self.surface
 
     def render_surface(self):
         raise NotImplementedError('CardSurface is an abstract class')
 
     def clear(self):
+        """
+        Clear surface to trigger rendering
+        """
         try:
             del self._surface
         except AttributeError:
@@ -122,76 +133,159 @@ def court_image(card):
     return court_pic[card.number]
 
 
+def symetry_arithmetic_dist(coord_1d, coord_1d_axis):
+    return 2 * (coord_1d - coord_1d_axis) - 1
+
+
+def rect_symetry(rect, x=None, y=None):
+    i = j = 0
+    if x:
+        i = symetry_arithmetic_dist(x, rect.centerx)
+    if y:
+        j = symetry_arithmetic_dist(y, rect.centery)
+    return rect.move(i, j)
+
+
+def _dichoto_next(bottom, top, mid, func_eval, goal):
+    """
+    Assuming positive gradient (monotonous growing function)
+    """
+    if func_eval == goal:
+        return None
+    elif func_eval > goal:
+        if mid > bottom:
+            return (bottom, mid - 1)
+        else:
+            return None
+    else:
+        if mid < top:
+            return (mid + 1, top)
+        else:
+            return None
+
+
+def _dichoto_search(goal, func, a, b):
+    """
+    Assuming positive gradient (monotonous growing function)
+    """
+    c = (a + b) // 2
+    y, resp = func(c)
+    latest = (c, resp)
+    try:
+        a, b = _dichoto_next(a, b, c, y, goal)
+    except TypeError:
+        return latest
+    else:
+        return _dichoto_search(goal, func, a, b)
+
+
+def _dichoto_search_2D(gx, gy, func, ax, bx, ay, by):
+    """
+    Assuming positive gradient (monotonous growing function)
+    """
+    cx, cy = (ax + bx) // 2, (ay + by) // 2
+    (fx, fy), resp = func(cx, cy)
+    latest = ((cx, cy), resp)
+    try:
+        ax, bx = _dichoto_next(ax, bx, cx, fx, gx)
+    except TypeError:
+        ax = bx = cx
+    try:
+        ay, by = _dichoto_next(ay, by, cy, fy, gy)
+    except TypeError:
+        ay = by = cy
+    if ax == bx and ay == by:
+        return latest
+    else:
+        return _dichoto_search_2D(gx, gy, func, ax, bx, ay, by)
+
+
+def font_fill(font, text, size, botx=1, boty=1, **kwargs):
+    gx, gy = size
+
+    def func(x, y):
+        srf, r = font.render(text, size=(x, y), **kwargs)
+        return r.size, (srf, r)
+
+    c, (srf, r) = _dichoto_search_2D(gx, gy, func, botx, 3 * gx, boty, 3 * gy)
+    return srf, r
+
+
 class Card(CardSurface):
     """
     CardSurface rendered procedurally from unicode symbols.
     """
 
     def __init__(self, *args, **kwargs):
-        global font
-        if font is None:
-            font = pygame.freetype.SysFont(','.join(font_selection), 80)
         super().__init__(*args, **kwargs)
+        with suppress(KeyError):
+            self.font = kwargs['font']
+
+    def blit_text_to(self, surface, text, position, centered=True):
+        txt_srf, _ = font_fill(self.font, text, size=position.size, fgcolor=self.suit.color)
+        if centered:
+            position = txt_srf.get_rect(center=position.center)
+        surface.blit(txt_srf, position)
 
     def render_surface(self):
-        # TODO clean up by using pygame.Rect utility
-        # TODO fix resize bug
-        self.surface.fill(Colors.white)
-        card_rect = self.surface.get_rect()
-        _, _, card_w, card_h = card_rect
+        card = self.surface.get_rect()
         # border
-        pygame.draw.rect(self.surface, Colors.black, card_rect, 1)
+        pygame.draw.rect(self.surface, Colors.black, card, 1)
         # corners
-        midh = card_h // 2 + 1
-        corner = (card_w // 6, card_h // 6)
-        margin = card_w // 30
-        x_pos = (margin, card_w - corner[0] - margin)
-        y_pos_val = (margin, card_h - margin - corner[1])
-        y_pos_sym = (corner[1], card_h - 2 * corner[1])  # no margin for compact style
-        corner_val_size = (corner[0] // len(self.value), corner[1])
-        corner_sym_size = (corner[0], corner[0])
-        for x in x_pos:
-            for y in y_pos_val:  # corner values
-                srf, _ = font.render(self.value, size=corner_val_size,
-                                     rotation=180 if y > midh else 0, fgcolor=self.suit.color)
-                self.surface.blit(srf, srf.get_rect(center=pygame.Rect(x, y, *corner).center))
-            for y in y_pos_sym:  # corner symbol
-                srf, _ = font.render(self.suit.symbol, size=corner_sym_size,
-                                     rotation=180 if y > midh else 0, fgcolor=self.suit.color)
-                self.surface.blit(srf, srf.get_rect(center=pygame.Rect(x, y, *corner_sym_size).center))
+        margin = card.w // 20
+        corner_sprite = pygame.Surface(size=(card.w // 8, card.h // 4))
+        corner_sprite.fill(Colors.white)
+        corner_value = corner_sprite.get_rect()
+        corner_value.height //= 2  # top half corner
+        self.blit_text_to(corner_sprite, text=self.value, position=corner_value)
+        corner_sym = pygame.Rect(corner_value.midbottom, (min(corner_value.size),) * 2)
+        corner_sym.centerx = corner_value.centerx
+        self.blit_text_to(corner_sprite, text=self.suit.symbol, position=corner_sym)
+        topleft_corner = corner_sprite.get_rect().move(margin, margin)
+        corners = [rect_symetry(topleft_corner, x=x, y=y) for x in [None, card.centerx] for y in [None, card.centery]]
+        flipped_corner_sprite = pygame.transform.flip(corner_sprite, False, True)
+        for corner_position in corners:
+            self.surface.blit(flipped_corner_sprite if corner_position.y > card.centery else corner_sprite, corner_position)
         # center symbols
-        c_x, c_y = corner[0], corner[1] // 2
-        c_w, c_h = card_w - 2 * c_x, card_h - 2 * c_y
-        sym_size = c_h // 4
-        pic_size = c_h * 2 // 3
+        botright_corner = next((c for c in corners if c.x > card.centerx and c.y > card.centery))
+        cisize = tuple(map(lambda it: reduce(sub, it), zip(botright_corner.bottomleft, (margin, 0), topleft_corner.midright)))
+        card_image_sprite = pygame.Surface(size=cisize)
+        card_image = card_image_sprite.get_rect(center=card.center)
+        sym_size = min(2 * card_image.width // 5, card_image.height // 4)
+        court_size = 3 * sym_size
         if self.is_court():
             # display big pic in center
             try:
-                srf = court_image(self)
+                court_srf = court_image(self)
             except KeyError:
-                srf = self.suit.alt_symbol
-            if not isinstance(srf, pygame.Surface):
-                srf, _ = font.render(srf, size=3 * sym_size, fgcolor=self.suit.color)
-            dest_rect = pygame.Rect(c_x + (c_w - pic_size) // 2, c_y + (c_h - pic_size) // 2, pic_size, pic_size)
-            self.surface.blit(srf, srf.get_rect(center=dest_rect.center))
+                court_srf = self.suit.alt_symbol
+            if not isinstance(court_srf, pygame.Surface):
+                court_srf, _ = self.font.render(court_srf, size=court_size, fgcolor=self.suit.color)
+            self.surface.blit(court_srf, court_srf.get_rect(center=card_image.center))
         else:
-            sym_area = (c_x, c_y, c_w - sym_size, c_h - sym_size)
-            x_pos = [1 / 2] if self.number < 4 else [0, 1]
-            rows = min(4, self.number // len(x_pos))
-            y_pos = map(lambda x: x / (rows - 1), range(rows))
-            positions = ((x, y) for x in x_pos for y in y_pos)
-            remain = self.number - rows * len(x_pos)
-            remain_pos = map(lambda x: (1 / 2, (2 * x + 1) / 2 / (rows - 1)),
-                             {1: [(rows - 2) // 2], 2: [0, rows - 2]}.get(remain, range(remain)))
-            for x, y in chain(positions, remain_pos):
-                dest_rect = pygame.Rect(sym_area[0] + (x * sym_area[2]),
-                                        sym_area[1] + (y * sym_area[3]),
-                                        sym_size,
-                                        sym_size)
-                srf, _ = font.render(self.suit.symbol, size=sym_size,
-                                     rotation=180 if dest_rect[1] > midh else 0,
-                                     fgcolor=self.suit.color)
-                self.surface.blit(srf, srf.get_rect(center=dest_rect.center))
+            sym_sprite, sym = font_fill(self.font, text=self.suit.symbol, size=(sym_size,) * 2, fgcolor=self.suit.color)
+            sym.topleft = (0, 0)
+            flipped_sym_sprite = pygame.transform.flip(sym_sprite, False, True)
+            # numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            # columns = [1, 1, 1, 2, 2, 2, 2, 2, 2, 2]
+            # per_col = [1, 2, 3, 2, 2, 3, 3, 3, 4, 4]
+            # remaind = [0, 0, 0, 0, 1, 0, 1, 0, 1, 2]
+            if self.number < 4:
+                per_col = self.number
+                column_x = card_image.centerx - (sym.width // 2)
+            else:
+                per_col = self.number // 3 + 1
+                column_x = card_image.x
+            column_y = (card_image.y + (card_image.h - sym.h) * k / (per_col - 1) for k in range(per_col))
+            positions = [sym.move(column_x, y) for y in column_y]
+            if self.number >= 4:  # add symetric positions
+                positions += [rect_symetry(pos, x=card_image.centerx) for pos in positions]
+            column_y = [card_image.y + sym.h / 2 + (card_image.h - sym.h) * (2 * k + 1) / 2 / (per_col - 1) for k in range(per_col)]
+            remainder_y = {5: [card_image.centery], 9: [card_image.centery], 7: column_y[0:1], 8: column_y[0:2],
+                           10: column_y[0:3:2]}.get(self.number, [])
+            positions += (sym_sprite.get_rect(center=(card_image.centerx, y)) for y in remainder_y)
+            for pos in positions:
+                self.surface.blit(flipped_sym_sprite if pos.y > card.centery else sym_sprite, pos)
 
 
 deck = [Card(number=i, suit=Suits.suits[s]) for s in range(4) for i in range(1, 14)]
@@ -256,6 +350,7 @@ def wait_events():
 
 
 def main():
+    pygame.init()
     screensize = (1200, 480)
     screen = pygame.display.set_mode(screensize, RESIZABLE)
     global font  # init freetype
