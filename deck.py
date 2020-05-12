@@ -8,8 +8,10 @@ from itertools import chain, cycle, starmap
 from time import sleep
 from operator import sub
 from contextlib import suppress
+import random
 
-card_ratio = 8 / 5
+
+card_ratio = 8 / 5  # heigth / width
 card_size = (75, 120)
 font = None
 font_selection = [
@@ -26,10 +28,11 @@ Color = namedtuple('Color', ['r', 'g', 'b'])
 class Colors(object):  # hex code comments for my color highlighter
     red = Color(r=255, g=0, b=0)  # 0xFF0000
     green = Color(r=0, g=79, b=15)  # 0x004D0F
-    light_green = Color(r=0, g=79, b=15)  # 0x578132
+    light_green = Color(r=87, g=129, b=50)  # 0x578132
     black = Color(r=0, g=0, b=0)  # 0x000000
     white = Color(r=255, g=255, b=255)  # 0xFFFFFF
     blue = Color(r=0, g=0, b=255)  # 0x0000FF
+    blueish = Color(r=127, g=127, b=211)  # 0x7F7FD3
     gold = pygame.color.THECOLORS['goldenrod']
 
 
@@ -69,7 +72,7 @@ class FrenchCard(object):
         return self.number in self.court
 
     def __str__(self):
-        return self.value + self.car.suit.symbol
+        return self.value + self.suit.symbol
 
 
 class CardSurface(FrenchCard):
@@ -238,12 +241,12 @@ class Card(CardSurface):
         corner_value = corner_sprite.get_rect()
         corner_value.height //= 2  # top half corner
         self.blit_text_to(corner_sprite, text=self.value, position=corner_value)
-        corner_sym = pygame.Rect(corner_value.midbottom, (min(corner_value.size),) * 2)
-        corner_sym.centerx = corner_value.centerx
-        self.blit_text_to(corner_sprite, text=self.suit.symbol, position=corner_sym)
+        corner_symbol = pygame.Rect((0, corner_value.bottom + margin), (min(corner_value.width, corner_value.height - margin),) * 2)
+        corner_symbol.centerx = corner_value.centerx
+        self.blit_text_to(corner_sprite, text=self.suit.symbol, position=corner_symbol)
         topleft_corner = corner_sprite.get_rect().move(margin, margin)
         corners = [rect_symetry(topleft_corner, x=x, y=y) for x in [None, card.centerx] for y in [None, card.centery]]
-        flipped_corner_sprite = pygame.transform.flip(corner_sprite, False, True)
+        flipped_corner_sprite = pygame.transform.flip(corner_sprite, True, True)
         for corner_position in corners:
             self.surface.blit(flipped_corner_sprite if corner_position.y > card.centery else corner_sprite, corner_position)
         # center symbols
@@ -251,8 +254,8 @@ class Card(CardSurface):
         cisize = tuple(map(lambda it: reduce(sub, it), zip(botright_corner.bottomleft, (margin, 0), topleft_corner.midright)))
         card_image_sprite = pygame.Surface(size=cisize)
         card_image = card_image_sprite.get_rect(center=card.center)
-        sym_size = min(2 * card_image.width // 5, card_image.height // 4)
-        court_size = 3 * sym_size
+        symbol_size = min(2 * card_image.width // 5, card_image.height // 4)
+        court_size = 3 * symbol_size
         if self.is_court():
             # display big pic in center
             try:
@@ -263,66 +266,80 @@ class Card(CardSurface):
                 court_srf, _ = self.font.render(court_srf, size=court_size, fgcolor=self.suit.color)
             self.surface.blit(court_srf, court_srf.get_rect(center=card_image.center))
         else:
-            sym_sprite, sym = font_fill(self.font, text=self.suit.symbol, size=(sym_size,) * 2, fgcolor=self.suit.color)
-            sym.topleft = (0, 0)
-            flipped_sym_sprite = pygame.transform.flip(sym_sprite, False, True)
+            symbol_sprite, symbol = font_fill(self.font, text=self.suit.symbol, size=(symbol_size,) * 2, fgcolor=self.suit.color)
+            symbol.topleft = (0, 0)
+            flipped_symbol_sprite = pygame.transform.flip(symbol_sprite, False, True)
             # numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
             # columns = [1, 1, 1, 2, 2, 2, 2, 2, 2, 2]
             # per_col = [1, 2, 3, 2, 2, 3, 3, 3, 4, 4]
             # remaind = [0, 0, 0, 0, 1, 0, 1, 0, 1, 2]
             if self.number < 4:
                 per_col = self.number
-                column_x = card_image.centerx - (sym.width // 2)
+                column_x = card_image.centerx - (symbol.width // 2)
             else:
                 per_col = self.number // 3 + 1
                 column_x = card_image.x
-            column_y = (card_image.y + (card_image.h - sym.h) * k / (per_col - 1) for k in range(per_col))
-            positions = [sym.move(column_x, y) for y in column_y]
+            column_y = (card_image.y + (card_image.h - symbol.h) * k / (per_col - 1) for k in range(per_col))
+            positions = [symbol.move(column_x, y) for y in column_y]
             if self.number >= 4:  # add symetric positions
                 positions += [rect_symetry(pos, x=card_image.centerx) for pos in positions]
-            column_y = [card_image.y + sym.h / 2 + (card_image.h - sym.h) * (2 * k + 1) / 2 / (per_col - 1) for k in range(per_col)]
+            column_y = [card_image.y + symbol.h / 2 + (card_image.h - symbol.h) * (2 * k + 1) / 2 / (per_col - 1) for k in range(per_col)]
             remainder_y = {5: [card_image.centery], 9: [card_image.centery], 7: column_y[0:1], 8: column_y[0:2],
                            10: column_y[0:3:2]}.get(self.number, [])
-            positions += (sym_sprite.get_rect(center=(card_image.centerx, y)) for y in remainder_y)
+            positions += (symbol_sprite.get_rect(center=(card_image.centerx, y)) for y in remainder_y)
             for pos in positions:
-                self.surface.blit(flipped_sym_sprite if pos.y > card.centery else sym_sprite, pos)
+                self.surface.blit(flipped_symbol_sprite if pos.y > card.centery else symbol_sprite, pos)
 
 
+class EmptySlot(CardSurface):
+    def render(self):
+        self.surface.fill(Colors.light_green)
+        return self.surface
+
+
+empty_card = EmptySlot()
 deck = [Card(number=i, suit=Suits.suits[s]) for s in range(4) for i in range(1, 14)]
 
 
 def _resize(new_size):
     global card_size
     card_size = new_size
-    for c in deck:
+    for c in chain(deck, [empty_card]):
         c.resize(new_size)
+    return card_size
 
 
 @singledispatch
 def resize(new_width):
     new_size = int(new_width), int(new_width * card_ratio)
-    _resize(new_size)
+    return _resize(new_size)
 
 
 @resize.register(tuple)
 def _(new_size):
-    _resize(new_size)
+    return _resize(new_size)
+
+
+def set_size(screensize, cols=8, rows=3.5, margin=5):
+    ws, hs = screensize
+    ws -= (cols + 1) * margin
+    hs -= (rows + 1) * margin
+    h = int(min(ws / cols * card_ratio, hs / rows))
+    w = int(h / card_ratio)
+    return resize((w, h))
+
+
+def shuffle():
+    random.shuffle(deck)
 
 
 def show_deck(screen, suit_offset=0, clean=True):
     if(clean):
         screen.fill(Colors.green)
     m = 5
+    set_size(screen.get_rect().size, cols=13, rows=4, margin=m)
     wc, hc = map(lambda x: x + m, card_size)
-    n = len(deck)
-    rows = len(Suits.suits)
-    cols = (n - 1) // rows + 1
-    _, _, ws, hs = screen.get_rect()
-    max_wc = min(ws // cols, hs / card_ratio // rows)
-    if max_wc < wc:
-        resize(max_wc - m)
-        wc, hc = map(lambda x: x + m, card_size)
-    for c, (i, j) in zip(deck, ((i, j) for i in range(rows) for j in range(cols))):
+    for c, (i, j) in zip(deck, ((i, j) for i in range(4) for j in range(13))):
         screen.blit(c.render(), (m + wc * j, m + hc * i))
     pygame.display.update()
 
@@ -360,6 +377,7 @@ def main():
             show_deck(screen, offset)
             while wait_events():
                 sleep(0.01)
+                shuffle()
     except EOFError:
         pass
     finally:
